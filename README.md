@@ -357,7 +357,7 @@ ollama serve
 ```bash
 cd ~/Projects/draftly
 source .venv/bin/activate
-python main.py
+uvicorn main:app --reload
 ```
 
 Expected output:
@@ -372,7 +372,7 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 ```bash
 cd ~/Projects/draftly
 source .venv/bin/activate
-streamlit run streamlit_app.py
+streamlit run main.py
 ```
 
 Expected output:
@@ -700,7 +700,7 @@ and can be resumed by thread ID. For production, swap to `langgraph.checkpoint.p
 Always run from the project root (`draftly/`), never from inside `src/`:
 ```bash
 cd ~/Projects/draftly
-python main.py  # ✅
+uvicorn main:app --reload  # 
 # NOT: cd src && python main.py  ✗
 ```
 
@@ -742,7 +742,7 @@ Delete `token.json` and re-connect to trigger a fresh consent screen with all sc
 **Streamlit shows `Connection refused` errors**
 The FastAPI backend isn't running. Start it:
 ```bash
-python main.py
+uvicorn main:app --reload
 ```
 
 ---
