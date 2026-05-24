@@ -3,8 +3,8 @@ from __future__ import annotations
 import uuid
 import logging
 from typing import Any
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Depends, FastAPI, HTTPException, Query
 
@@ -60,6 +60,13 @@ class SendRequest(BaseModel):
     """Body payload for POST /drafts/{id}/send."""
 
     thread_id: str | None = None
+
+
+class GenerateDraftsRequest(BaseModel):
+    """Body payload for POST /drafts/generate with optional intent preferences."""
+
+    max_results: int = 10
+    intent_preferences: dict[str, str] = Field(default_factory = dict)
 
 @app.get("/", tags = ["Health"])
 def root() -> dict[str, str]:
@@ -239,8 +246,45 @@ def get_inbox(max_results: int = Query(10, ge=1, le=50)) -> dict[str, Any]:
 
         raise HTTPException(status_code = 500, detail = f"Failed to fetch inbox: {error}")
 
+
+@app.get("/emails/summaries", tags = ["Emails"])
+def get_email_summaries(max_results: int = Query(10, ge=1, le=50)) -> dict[str, Any]:
+    """Return lightweight summaries and suggested intents for unread emails."""
+
+    try:
+        logger.info(f"Fetching email summaries (max_results={max_results})")
+        if not GmailService().is_authenticated():
+            raise HTTPException(status_code = 401, detail = "Gmail not authenticated. Call /auth/connect first.")
+
+        emails = GmailService().fetch_unread_emails(max_results)
+        summaries = []
+        for email in emails:
+            summaries.append(
+                {
+                    "id": email.id,
+                    "thread_id": email.thread_id,
+                    "sender": email.sender,
+                    "subject": email.subject,
+                    "summary": _summarize_email_text(email.subject or "", email.body or ""),
+                    "recommended_intent": _infer_intent(email.subject or "", email.body or ""),
+                }
+            )
+
+        return {
+            "count": len(summaries),
+            "summaries": summaries,
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        logger.error(f"Failed to fetch email summaries: {error}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = f"Failed to fetch email summaries: {error}")
+
 @app.post("/drafts/generate", tags = ["Drafts"])
 def generate_drafts(
+    payload: GenerateDraftsRequest | None = None,
     max_results: int = Query(10, ge=1, le=30),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
@@ -259,7 +303,12 @@ def generate_drafts(
     """
 
     try:
-        logger.info(f"Draft generation triggered (max_results={max_results})")
+        resolved_max_results = payload.max_results if payload else max_results
+        intent_preferences = payload.intent_preferences if payload else {}
+        logger.info(
+            f"Draft generation triggered (max_results={resolved_max_results}, "
+            f"intent_preferences={len(intent_preferences)})"
+        )
 
         if not GmailService().is_authenticated():
             logger.warning("Draft generation attempted without Gmail authentication")
@@ -269,13 +318,20 @@ def generate_drafts(
         before_count = db.query(Draft).count()
         logger.info(f"Draft count before generation: {before_count}")
 
-        result = DraftlyAgent().run_draft_generation(max_results = max_results)
+        result = DraftlyAgent().run_draft_generation(
+            max_results = resolved_max_results,
+            intent_preferences = intent_preferences,
+        )
         after_count = db.query(Draft).count()
         logger.info(f"Draft count after generation: {after_count}")
 
         if after_count == before_count:
             logger.warning("Agent completed without creating drafts, using fallback mechanism")
-            fallback_created = _persist_fallback_drafts(db = db, max_results = max_results)
+            fallback_created = _persist_fallback_drafts(
+                db = db,
+                max_results = resolved_max_results,
+                intent_preferences = intent_preferences,
+            )
             result["fallback_created"] = fallback_created
             result["mode"] = "fallback" if fallback_created > 0 else "agent"
 
@@ -722,7 +778,34 @@ def _get_draft_or_404(db: Session, draft_id: str) -> type[Draft]:
         raise HTTPException(status_code = 500, detail = f"Error fetching draft: {error}")
 
 
-def _persist_fallback_drafts(db: Session, max_results: int) -> int:
+def _infer_intent(subject: str, body: str) -> str:
+    """Infer a recommended response intent for UI guidance."""
+
+    content = f"{subject} {body}".lower()
+    positive_keywords = ["offer", "selected", "congratulations", "internship", "opportunity"]
+    negative_keywords = ["decline", "reject", "withdraw", "not interested", "cancel"]
+
+    if any(word in content for word in positive_keywords):
+        return "accept"
+    if any(word in content for word in negative_keywords):
+        return "reject"
+    return "neutral"
+
+
+def _summarize_email_text(subject: str, body: str) -> str:
+    """Build a short summary line for unread-email preview before drafting."""
+
+    clean_subject = subject or "(no subject)"
+    clean_body = (body or "").strip().replace("\n", " ")
+    preview = clean_body[:180] + ("..." if len(clean_body) > 180 else "")
+    return f"Subject: {clean_subject}. Main message: {preview or 'No body content provided.'}"
+
+
+def _persist_fallback_drafts(
+    db: Session,
+    max_results: int,
+    intent_preferences: dict[str, str] | None = None,
+) -> int:
     """Persist simple pending drafts directly from unread emails when agent saving fails."""
 
     try:
@@ -756,6 +839,7 @@ def _persist_fallback_drafts(db: Session, max_results: int) -> int:
                         original_subject = email.subject,
                         user_profile = user_profile,
                         user_signature = user_signature,
+                        intent = (intent_preferences or {}).get(email.id, "neutral"),
                     ),
                     status = DraftStatus.pending,
                     tone = "formal",
@@ -787,6 +871,7 @@ def _generate_professional_reply(
     original_subject: str | None,
     user_profile: dict[str, Any],
     user_signature: str,
+    intent: str = "neutral",
 ) -> str:
     """
     Generate a minimal acknowledgment email (fallback only).
@@ -825,12 +910,18 @@ def _generate_professional_reply(
         user_display_name = user_profile.get("display_name", "") or "Support Team"
         user_email = user_profile.get("email", "")
 
+        intent_text = {
+            "accept": "Thank you for this opportunity. I am happy to accept and proceed with the next steps.",
+            "reject": "Thank you for the offer. After careful consideration, I would like to respectfully decline.",
+            "neutral": "Thank you for your message. I have reviewed it and will share the next update shortly.",
+        }.get(intent.lower(), "Thank you for your message. I will get back to you shortly.")
+
         body_lines = [
             f"Dear {recipient_name},",
             "",
             f"Thank you for your message regarding '{safe_subject}'.",
             "",
-            "I have received your email and will review it thoroughly before providing a detailed response.",
+            intent_text,
             "",
             "I appreciate you reaching out. Please expect a comprehensive reply soon.",
             "",

@@ -3,6 +3,76 @@ from src.services import GmailService
 
 logger = logging.getLogger(__name__)
 
+def _infer_recommended_intent(subject: str, body: str) -> str:
+    """Infer a suggested intent label for a reply (accept/reject/neutral)."""
+
+    content = f"{subject} {body}".lower()
+    positive_keywords = [
+        "offer",
+        "selected",
+        "congratulations",
+        "internship",
+        "opportunity",
+        "invitation",
+    ]
+    negative_keywords = [
+        "decline",
+        "reject",
+        "withdraw",
+        "not interested",
+        "cancel",
+    ]
+
+    if any(word in content for word in positive_keywords):
+        return "accept"
+
+    if any(word in content for word in negative_keywords):
+        return "reject"
+
+    return "neutral"
+
+
+def summarize_unread_emails(max_results: int = 10) -> str:
+    """
+    Summarize unread emails and suggest a reply intent label.
+
+    Use this before generating drafts so the UI/user can choose whether the
+    response should be positive (accept), negative (reject), or neutral.
+    """
+
+    try:
+        logger.info(f"Summarizing unread emails (max_results={max_results})")
+        emails = GmailService().fetch_unread_emails(max_results)
+
+        if not emails:
+            return "No unread emails found to summarize."
+
+        lines: list[str] = []
+        for email in emails:
+            body = (email.body or "").strip()
+            body_preview = body[:180] + ("..." if len(body) > 180 else "")
+            recommended_intent = _infer_recommended_intent(email.subject or "", body)
+            summary = (
+                f"From {email.sender} about '{email.subject or '(no subject)'}'. "
+                f"Main point: {body_preview or 'No body content.'}"
+            )
+            lines.append(
+                f"EMAIL_ID: {email.id}\n"
+                f"THREAD_ID: {email.thread_id}\n"
+                f"SUMMARY: {summary}\n"
+                f"RECOMMENDED_INTENT: {recommended_intent}\n"
+                f"{'-' * 60}"
+            )
+
+        logger.info(f"Built summaries for {len(emails)} emails")
+
+        return "\n".join(lines)
+
+    except Exception as error:
+        logger.error(f"Error summarizing unread emails: {error}", exc_info = True)
+
+        return f"Error summarizing unread emails: {error}"
+
 def fetch_unread_emails(max_results: int = 10) -> str:
     """
     Fetch unread emails from the user's Gmail INBOX.
