@@ -256,55 +256,13 @@ with tab_drafts:
                         use_container_width = True,
                     ):
 
-                        with st.spinner("Agent preparing send…"):
+                        with st.spinner("Sending email…"):
                             r = api("POST", f"/drafts/{draft_id}/send", json = {"thread_id": None})
 
                         if "error" in r:
                             st.error(r["error"])
-
-                        elif r.get("interrupted"):
-                            payload = r.get("interrupt_payload", {})
-                            st.warning("Agent wants to send the email. Review below:")
-                            st.code(
-                                f"To      : {payload.get('to', d['sender'])}\n"
-                                f"Subject : {payload.get('subject', 'Re: ' + d['subject'])}\n\n"
-                                f"{payload.get('body', d['draft_body'])}",
-                                language = None,
-                            )
-
-                            st.session_state[f"thread_{draft_id}"] = r.get("thread_id")
-                            approval_cols = st.columns(2)
-
-                            with approval_cols[0]:
-                                if st.button(
-                                        "Confirm Send",
-                                        key = f"confirm_{draft_id}",
-                                        type = "primary"
-                                ):
-                                    tid = st.session_state.get(f"thread_{draft_id}")
-                                    r2 = api(
-                                        "POST",
-                                        f"/drafts/{draft_id}/resume",
-                                        json = {"thread_id": tid, "approved": True, "reason": ""},
-                                    )
-                                    st.toast("Sent!" if "error" not in r2 else f"{r2['error']}")
-                                    time.sleep(0.5)
-                                    st.rerun()
-
-                            with approval_cols[1]:
-                                if st.button("Cancel Send", key = f"cancel_{draft_id}"):
-                                    tid = st.session_state.get(f"thread_{draft_id}")
-                                    api(
-                                        "POST",
-                                        f"/drafts/{draft_id}/resume",
-                                        json = {"thread_id": tid, "approved": False, "reason": "Cancelled by user."},
-                                    )
-                                    st.toast("Cancelled.")
-                                    time.sleep(0.4)
-                                    st.rerun()
-
                         else:
-                            st.toast("Sent!" if "error" not in r else f"{r.get('error', 'Unknown error')}")
+                            st.toast(r.get("message", "Sent!"))
                             time.sleep(0.4)
                             st.rerun()
 
