@@ -13,6 +13,7 @@ from src.config import Settings
 from src.tools import (
     fetch_sent_emails,
     fetch_unread_emails,
+    summarize_unread_emails,
     get_draft_by_id,
     list_pending_drafts,
     save_draft,
@@ -32,7 +33,12 @@ Your primary workflow:
 1. Call fetch_sent_emails to learn the user's personal writing style,
    tone, greeting patterns, sign-off preferences, and signature format.
 2. Call fetch_unread_emails to get unread inbox messages.
-3. For EACH unread email, generate a thoughtful, contextual reply that:
+3. Call summarize_unread_emails before creating drafts.
+4. Respect USER_INTENT_PREFERENCES passed by the user:
+   - accept: create a positive/acceptance draft
+   - reject: create a polite rejection draft
+   - neutral: create a balanced informational draft
+5. For EACH unread email, generate a thoughtful, contextual reply that:
    - ANALYZES the incoming email to understand what is being asked/stated
    - GENERATES appropriate, relevant content based on email context (not generic templates)
    - MATCHES the user's writing style inferred from sent emails
@@ -41,10 +47,10 @@ Your primary workflow:
    - INCLUDES call-to-action or next steps where appropriate
    - PRESERVES email threading metadata (thread_id, message_id_header)
    - INCLUDES proper business etiquette with greeting and professional sign-off
-4. Call save_draft for each generated reply (status: pending).
+6. Call save_draft for each generated reply (status: pending).
    NEVER skip this step - save every generated draft.
-5. After saving all drafts, call list_pending_drafts to confirm creation.
-6. Do NOT send any email autonomously.
+7. After saving all drafts, call list_pending_drafts to confirm creation.
+8. Do NOT send any email autonomously.
    Only call send_approved_email when explicitly instructed by the user
    to send a specific draft, and the agent will pause automatically via
    interrupt_on before dispatching.
@@ -98,6 +104,7 @@ class DraftlyAgent:
 
             tools = [
                 fetch_unread_emails,
+                summarize_unread_emails,
                 fetch_sent_emails,
                 save_draft,
                 list_pending_drafts,
@@ -123,6 +130,7 @@ class DraftlyAgent:
         self,
         thread_id: str | None = None,
         max_results: int = 10,
+        intent_preferences: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """
         Trigger a full inbox scan + draft generation cycle.
@@ -141,6 +149,7 @@ class DraftlyAgent:
         -------
         dict
             ``{"output": str, "thread_id": str, "interrupted": bool}``
+            :param intent_preferences:
             :param thread_id:
             :param max_results:
         """
@@ -161,9 +170,11 @@ class DraftlyAgent:
                         "role": "user",
                         "content": (
                             f"Please fetch up to {max_results} unread emails, learn from my sent emails, "
+                            "summarize unread emails first, "
                             "generate thoughtful reply drafts for each fetched unread email (one draft per email), "
                             "and save all drafts as pending for my review. "
-                            "Do not stop after one draft if multiple emails were fetched."
+                            "Do not stop after one draft if multiple emails were fetched. "
+                            f"USER_INTENT_PREFERENCES: {intent_preferences or {}}"
                         ),
                     }
                 ]
