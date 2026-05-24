@@ -28,6 +28,15 @@ if "last_inbox_fetch_max" not in st.session_state:
 if "last_inbox_fetch_count" not in st.session_state:
     st.session_state["last_inbox_fetch_count"] = 0
 
+if "email_summaries" not in st.session_state:
+    st.session_state["email_summaries"] = []
+
+if "intent_preferences" not in st.session_state:
+    st.session_state["intent_preferences"] = {}
+
+if "active_section" not in st.session_state:
+    st.session_state["active_section"] = "Inbox"
+
 def api(method: str, path: str, **kwargs) -> dict[str, Any]:
     """
     Make an API request and return parsed JSON.
@@ -107,7 +116,14 @@ with st.sidebar:
         help = "Runs the deep agent: fetches inbox, studies your style, generates drafts.",
     ):
         with st.spinner("Agent is working… this may take a minute"):
-            result = api("POST", f"/drafts/generate?max_results={target_generate_count}")
+            result = api(
+                "POST",
+                f"/drafts/generate?max_results={target_generate_count}",
+                json = {
+                    "max_results": int(target_generate_count),
+                    "intent_preferences": st.session_state.get("intent_preferences", {}),
+                },
+            )
 
         if "error" in result:
             st.error(result["error"])
@@ -115,14 +131,23 @@ with st.sidebar:
         else:
             st.success("Draft generation complete!")
             st.caption(result.get("output", ""))
+
+            st.session_state["email_summaries"] = []
+            st.session_state["intent_preferences"] = {}
+            st.session_state["active_section"] = "Drafts"
             st.rerun()
 
     st.divider()
     st.caption("FastAPI → http://localhost:8000/docs")
 
-tab_inbox, tab_drafts, tab_logs = st.tabs(["Inbox", "Drafts", "Activity Log"])
+active_section = st.radio(
+    "Section",
+    ["Inbox", "Drafts", "Activity Log"],
+    horizontal = True,
+    key = "active_section",
+)
 
-with tab_inbox:
+if active_section == "Inbox":
     st.header("Inbox – Unread Emails")
     col_refresh, col_count = st.columns([1, 3])
 
@@ -141,14 +166,25 @@ with tab_inbox:
     if st.button("Fetch Unread Emails", disabled = not connected):
         with st.spinner("Fetching…"):
             data = api("GET", f"/emails/inbox?max_results={max_results}")
+            summaries_data = api("GET", f"/emails/summaries?max_results={max_results}")
 
         if "error" in data:
             st.error(data["error"])
 
         else:
             emails = data.get("emails", [])
+            summaries = summaries_data.get("summaries", []) if "error" not in summaries_data else []
             st.session_state["last_inbox_fetch_max"] = int(max_results or 10)
             st.session_state["last_inbox_fetch_count"] = len(emails)
+            st.session_state["email_summaries"] = summaries
+
+            intents = st.session_state.get("intent_preferences", {})
+            for item in summaries:
+                email_id = item.get("id")
+                if email_id and email_id not in intents:
+                    intents[email_id] = item.get("recommended_intent", "neutral")
+            st.session_state["intent_preferences"] = intents
+
             st.info(f"Found **{len(emails)}** unread email(s).")
 
             for e in emails:
@@ -162,7 +198,34 @@ with tab_inbox:
                         key = f"inbox_{e['id']}"
                     )
 
-with tab_drafts:
+    if st.session_state.get("email_summaries"):
+        st.subheader("Reply Intent Selection")
+        st.caption("Pick whether each reply should be accept, reject, or neutral before generating drafts.")
+
+        intents = st.session_state.get("intent_preferences", {})
+        for item in st.session_state["email_summaries"]:
+            email_id = item.get("id", "")
+            if not email_id:
+                continue
+
+            default_intent = intents.get(email_id, item.get("recommended_intent", "neutral"))
+            label = f"{item.get('subject', '(no subject)')} — {item.get('sender', '')}"
+            with st.expander(label):
+                st.markdown(f"**Summary:** {item.get('summary', '')}")
+                selected = st.selectbox(
+                    "Reply Intent",
+                    ["accept", "reject", "neutral"],
+                    index = ["accept", "reject", "neutral"].index(default_intent)
+                    if default_intent in ("accept", "reject", "neutral")
+                    else 2,
+                    key = f"intent_{email_id}",
+                    help = "accept = positive/yes, reject = polite no, neutral = informational reply",
+                )
+                intents[email_id] = selected
+
+        st.session_state["intent_preferences"] = intents
+
+if active_section == "Drafts":
     st.header("Draft Management")
 
     filter_col, refresh_col = st.columns([2, 1])
@@ -278,7 +341,7 @@ with tab_drafts:
                         time.sleep(0.4)
                         st.rerun()
 
-with tab_logs:
+if active_section == "Activity Log":
     st.header("Activity Log")
     log_limit = st.slider("Entries to show", 10, 500, 50)
 
