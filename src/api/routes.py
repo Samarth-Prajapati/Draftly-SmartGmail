@@ -527,14 +527,11 @@ def send_draft(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """
-    Ask the deep agent to send an approved/edited draft.
+    Send an approved/edited draft immediately via Gmail.
 
-    The agent's send tool includes a LangGraph ``interrupt()`` – the
-    response will contain ``"interrupted": true`` and an
-    ``"interrupt_payload"`` with the email preview.  The client must
-    then call ``POST /drafts/{id}/resume`` to confirm or cancel.
-
-    Only drafts with status 'approved' or 'edited' can be sent.
+    This endpoint performs the actual send in one click and updates the
+    draft status to ``sent`` when successful. No second confirmation is
+    required in the UI.
     """
 
     try:
@@ -554,18 +551,37 @@ def send_draft(
 
             raise HTTPException(status_code = 401, detail = "Gmail not authenticated.")
 
-        logger.info(f"Invoking agent to send draft: {draft_id}")
-        result = DraftlyAgent().run_send(draft_id = draft_id, thread_id = body.thread_id)
+        sender = str(getattr(draft, "sender", "") or "")
+        subject = str(getattr(draft, "subject", "") or "")
+        draft_body = str(getattr(draft, "draft_body", "") or "")
+        thread_id = str(getattr(draft, "thread_id", "") or "") or (body.thread_id or None)
+        in_reply_to = str(getattr(draft, "message_id", "") or "") or None
 
-        if not result.get("interrupted"):
-            draft.status = DraftStatus.sent
-            write_log(db, "email_sent", f"Draft {draft_id} sent (no interrupt).")
-            db.commit()
-            logger.info(f"Draft sent successfully (no interrupt): {draft_id}")
+        if subject and not subject.lower().startswith("re:"):
+            subject = f"Re: {subject}"
 
-        logger.info(f"Send result: {result}")
+        logger.info(f"Sending draft directly via Gmail: {draft_id}")
+        result = GmailService().send_email(
+            to = sender,
+            subject = subject,
+            body = draft_body,
+            thread_id = thread_id,
+            in_reply_to = in_reply_to,
+        )
 
-        return result
+        draft.status = DraftStatus.sent
+        write_log(db, "email_sent", f"Draft {draft_id} sent directly from UI.")
+        db.commit()
+
+        logger.info(f"Draft sent successfully: {draft_id}")
+
+        return {
+            "message": "Draft sent successfully.",
+            "draft_id": draft_id,
+            "gmail_message_id": result.get("id", ""),
+            "thread_id": result.get("threadId", thread_id),
+            "status": DraftStatus.sent,
+        }
 
     except HTTPException:
         raise
@@ -608,11 +624,33 @@ def resume_send(
         )
 
         if body.approved:
-            draft.status = DraftStatus.sent
-            write_log(db, "email_sent", f"Draft {draft_id} sent after human approval.")
-            logger.info(f"Draft approved and sent: {draft_id}")
+            sent_successfully = "Email sent successfully" in str(result.get("output", ""))
+
+            if not sent_successfully:
+                logger.warning(
+                    f"Agent resume did not confirm send for draft {draft_id}; using direct Gmail fallback"
+                )
+                sender = str(getattr(draft, "sender", "") or "")
+                subject = str(getattr(draft, "subject", "") or "")
+                draft_body = str(getattr(draft, "draft_body", "") or "")
+                thread_id = str(getattr(draft, "thread_id", "") or "") or None
+                in_reply_to = str(getattr(draft, "message_id", "") or "") or None
+                GmailService().send_email(
+                    to = sender,
+                    subject = subject,
+                    body = draft_body,
+                    thread_id = thread_id,
+                    in_reply_to = in_reply_to,
+                )
+                sent_successfully = True
+
+            if sent_successfully:
+                draft.status = DraftStatus.sent
+                write_log(db, "email_sent", f"Draft {draft_id} sent after human approval.")
+                logger.info(f"Draft approved and sent: {draft_id}")
 
         else:
+            draft.status = DraftStatus.rejected
             write_log(db, "send_rejected", f"Draft {draft_id} send rejected. Reason: {body.reason}")
             logger.info(f"Draft send rejected: {draft_id} - Reason: {body.reason}")
         db.commit()

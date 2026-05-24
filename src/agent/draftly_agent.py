@@ -3,13 +3,13 @@ from __future__ import annotations
 import uuid
 import logging
 from typing import Any
+from langgraph.types import Command
 from langchain_ollama import ChatOllama
 from deepagents import create_deep_agent
-from langgraph.types import Command, interrupt
 from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.runnables import RunnableConfig
 
 from src.config import Settings
-from src.services import GmailService
 from src.tools import (
     fetch_sent_emails,
     fetch_unread_emails,
@@ -21,69 +21,9 @@ from src.tools import (
 
 logger = logging.getLogger(__name__)
 
-def send_email_with_approval(
-    to: str,
-    subject: str,
-    body: str,
-    thread_id: str = "",
-    in_reply_to: str = "",
-) -> str:
-    """
-    Send an email ONLY after receiving explicit human approval.
-
-    This tool pauses graph execution via LangGraph's interrupt() and
-    waits for the human operator to approve or reject send.
-
-    The agent must call this instead of sending emails directly.
-
-    Parameters
-    ----------
-    to          : Recipient email address.
-    subject     : Subject line.
-    body        : Full plain-text body of the reply.
-    thread_id   : Gmail thread ID for proper threading.
-    in_reply_to : RFC 2822 Message-ID of the original email.
-    """
-
-    try:
-        logger.info(f"Requesting approval to send email to: {to}, subject: {subject[:50]}")
-        decision: dict = interrupt(
-            {
-                "type": "send_approval",
-                "message": "Agent wants to send the following email. Approve?",
-                "to": to,
-                "subject": subject,
-                "body": body,
-                "thread_id": thread_id,
-                "in_reply_to": in_reply_to,
-            }
-        )
-
-        if not decision.get("approved", False):
-            reason = decision.get("reason", "No reason given.")
-            logger.warning(f"Send rejected by human. Reason: {reason}")
-
-            return f"Send REJECTED by human. Reason: {reason}"
-
-        logger.info(f"Send approved by human, dispatching email to: {to}")
-        result = GmailService().send_email(
-            to = to,
-            subject = subject,
-            body = body,
-            thread_id = thread_id or None,
-            in_reply_to = in_reply_to or None
-        )
-
-        return (
-            f"Email sent successfully after human approval.\n"
-            f"Gmail Message ID : {result.get('id', 'unknown')}\n"
-            f"Thread ID        : {result.get('threadId', 'unknown')}"
-        )
-
-    except Exception as error:
-        logger.error(f"Error in send_email_with_approval: {error}", exc_info = True)
-
-        raise
+_INTERRUPT_ON = {
+    "send_approved_email": True,
+}
 
 _SYSTEM_PROMPT = """
 # You are Draftly, a professional Gmail AI assistant. Your role is to intelligently generate personalized email replies.
@@ -105,9 +45,9 @@ Your primary workflow:
    NEVER skip this step - save every generated draft.
 5. After saving all drafts, call list_pending_drafts to confirm creation.
 6. Do NOT send any email autonomously.
-   Only call send_email_with_approval when explicitly instructed by the user
-   to send a specific draft, and even then the tool will pause for
-   human confirmation before dispatching.
+   Only call send_approved_email when explicitly instructed by the user
+   to send a specific draft, and the agent will pause automatically via
+   interrupt_on before dispatching.
 
 Quality guidelines for generated content:
 - CONTEXT-AWARE: Each reply must directly address the content and tone of the original email
@@ -169,6 +109,7 @@ class DraftlyAgent:
                 model = model,
                 tools = tools,
                 system_prompt = _SYSTEM_PROMPT,
+                interrupt_on = _INTERRUPT_ON,
                 checkpointer = self._checkpointer,
             )
             logger.info("DraftlyAgent initialized successfully")
@@ -208,7 +149,7 @@ class DraftlyAgent:
             tid = thread_id or str(uuid.uuid4())
             logger.info(f"Starting draft generation (thread={tid}, max_results={max_results})")
 
-            config = {
+            config: RunnableConfig = {
                 "configurable": {
                     "thread_id": tid
                 }
@@ -253,8 +194,8 @@ class DraftlyAgent:
         """
         Ask the agent to send a specific approved draft.
 
-        The agent will call ``send_email_with_approval`` which triggers
-        a LangGraph interrupt, pausing execution until ``resume()`` is
+        The agent will call ``send_approved_email`` which triggers a
+        LangGraph interrupt, pausing execution until ``resume()`` is
         called.
 
         Parameters
@@ -273,7 +214,7 @@ class DraftlyAgent:
             tid = thread_id or str(uuid.uuid4())
             logger.info(f"Starting send workflow (draft={draft_id}, thread={tid})")
 
-            config = {
+            config: RunnableConfig = {
                 "configurable": {
                     "thread_id": tid
                 }
@@ -284,7 +225,7 @@ class DraftlyAgent:
                     {
                         "role": "user",
                         "content": (
-                            f"Please send draft ID {draft_id} using send_email_with_approval. "
+                            f"Please send draft ID {draft_id} using send_approved_email. "
                             "Fetch the draft details first, then attempt to send."
                         ),
                     }
@@ -296,7 +237,7 @@ class DraftlyAgent:
             interrupt_payload = None
 
             if interrupted:
-                interrupts = result.get("__interrupt__", [])
+                interrupts = result.get("interrupts") or result.get("__interrupt__", [])
 
                 if interrupts:
                     interrupt_payload = interrupts[0].value if hasattr(interrupts[0], "value") else interrupts[0]
@@ -348,16 +289,29 @@ class DraftlyAgent:
         try:
             logger.info(f"Resuming workflow (thread={thread_id}, approved={approved})")
 
-            config = {
+            config: RunnableConfig = {
                 "configurable": {
                     "thread_id": thread_id
                 }
             }
 
-            resume_payload = {
-                "approved": approved,
-                "reason": reason
-            }
+            if approved:
+                resume_payload = {
+                    "decisions": [
+                        {
+                            "type": "approve",
+                        }
+                    ]
+                }
+            else:
+                resume_payload = {
+                    "decisions": [
+                        {
+                            "type": "reject",
+                            "message": reason or "Cancelled by user.",
+                        }
+                    ]
+                }
 
             result = self._agent.invoke(
                 Command(resume = resume_payload),
