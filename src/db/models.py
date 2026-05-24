@@ -1,7 +1,7 @@
 import enum
 import uuid
 import logging
-from datetime import datetime
+from datetime import datetime, UTC
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy import Column, DateTime, Enum, String, Text, create_engine
 
@@ -97,11 +97,11 @@ class Draft(Base):
         Enum(DraftStatus), nullable = False, default = DraftStatus.pending, index = True
     )
     tone: str = Column(String(64), nullable = False, default = "formal")
-    created_at: datetime = Column(DateTime, default = datetime.utcnow, nullable = False)
+    created_at: datetime = Column(DateTime, default = datetime.now(UTC), nullable = False)
     updated_at: datetime = Column(
         DateTime,
-        default = datetime.utcnow,
-        onupdate = datetime.utcnow,
+        default = datetime.now(UTC),
+        onupdate = datetime.now(UTC),
         nullable = False
     )
 
@@ -128,7 +128,7 @@ class Log(Base):
     id: str = Column(String(36), primary_key = True, default = lambda: str(uuid.uuid4()))
     event: str = Column(String(128), nullable = False, index = True)
     detail: str = Column(Text, nullable = True, default = "")
-    timestamp: datetime = Column(DateTime, default = datetime.utcnow, nullable = False)
+    timestamp: datetime = Column(DateTime, default = datetime.now(UTC), nullable = False)
 
     def __repr__(self) -> str:
         return f"<Log event={self.event!r} ts={self.timestamp}>"
