@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import os
 import time
 import logging
 import requests
 from typing import Any
 import streamlit as st
-
-from src import app
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -14,7 +13,7 @@ logging.basicConfig(
     format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
-API = "http://localhost:8000"
+API = os.getenv("DRAFTLY_API_BASE_URL", "http://localhost:8000").rstrip("/")
 
 st.set_page_config(
     page_title = "Draftly",
