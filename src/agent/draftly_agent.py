@@ -98,6 +98,7 @@ class DraftlyAgent:
 
             model = ChatOllama(
                 model = Settings().ollama_model,
+                base_url = Settings().ollama_base_url,
                 temperature = 0.3
             )
             logger.debug(f"ChatOllama model initialized: {Settings().ollama_model}")
