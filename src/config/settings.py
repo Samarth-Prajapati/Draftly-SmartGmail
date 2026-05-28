@@ -27,9 +27,13 @@ class Settings:
 
     # OLLAMA MODELS
     ollama_model = os.getenv("OLLAMA_CLOUD_MODEL")
+    ollama_base_url = os.getenv("OLLAMA_BASE_URL")
 
     # SQLITE DATABASE
     database_url = os.getenv("DATABASE_URL")
+
+    # FASTAPI URL
+    draftly_api_base_url = os.getenv("DRAFTLY_API_BASE_URL")
 
     def __init__(self):
         try:
@@ -47,6 +51,12 @@ class Settings:
 
             if not self.ollama_model:
                 logger.warning("OLLAMA_CLOUD_MODEL not set in environment")
+
+            if not self.ollama_base_url:
+                logger.warning("OLLAMA_BASE_URL not set in environment")
+
+            if not self.draftly_api_base_url:
+                logger.warning("DRAFTLY_API_BASE_URL not set in environment")
 
             logger.info("Settings initialized")
 

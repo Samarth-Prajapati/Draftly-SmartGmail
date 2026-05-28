@@ -1,0 +1,59 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: draftly-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: draftly-backend
+    restart: unless-stopped
+    command: ["uvicorn", "src.api.routes:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: sqlite:////app/data/draftly.db
+      GOOGLE_TOKEN_FILE: /app/data/token.json
+      OLLAMA_BASE_URL: http://ollama:11434
+    volumes:
+      - draftly-data:/app/data
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: draftly-frontend
+    restart: unless-stopped
+    command: ["streamlit", "run", "main.py", "--server.address", "0.0.0.0", "--server.port", "8501", "--server.headless", "true", "--server.enableCORS", "false"]
+    environment:
+      DRAFTLY_API_BASE_URL: http://backend:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  draftly-data:
+  ollama-data:
+
+
