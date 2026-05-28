@@ -6,11 +6,11 @@
 
 AI-powered assistant that reads your inbox, learns your writing style from sent emails,
 generates context-aware reply drafts, and sends them **only after you approve** - powered
-by a local Ollama model, FastAPI, LangChain Deep Agents, and Streamlit.
+by a configurable Ollama model endpoint, FastAPI, LangChain Deep Agents, and Streamlit.
 
 ![Python](https://img.shields.io/badge/Python-3.13-blue?logo=python)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi)
-![Streamlit](https://img.shields.io/badge/Streamlit-1.35-FF4B4B?logo=streamlit)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.136-009688?logo=fastapi)
+![Streamlit](https://img.shields.io/badge/Streamlit-1.57-FF4B4B?logo=streamlit)
 ![LangChain](https://img.shields.io/badge/LangChain-DeepAgents-1C3C3C?logo=langchain)
 ![Ollama](https://img.shields.io/badge/Ollama-Local_LLM-black)
 ![SQLite](https://img.shields.io/badge/SQLite-Database-003B57?logo=sqlite)
@@ -28,9 +28,11 @@ by a local Ollama model, FastAPI, LangChain Deep Agents, and Streamlit.
 - [Step 2 — Clone & Virtual Environment](#step-2--clone--virtual-environment)
 - [Step 3 — Install Dependencies](#step-3--install-dependencies)
 - [Step 4 — Configure .env](#step-4--configure-env)
+- [Environment Variables](#environment-variables)
 - [Step 5 — Pull Ollama Model](#step-5--pull-ollama-model)
 - [Step 6 — Run the Application](#step-6--run-the-application)
 - [Step 7 — First-Run: Gmail OAuth](#step-7--first-run-gmail-oauth)
+- [Docker](#docker)
 - [Usage Flow](#usage-flow)
 - [API Reference](#api-reference)
 - [Human-in-the-Loop (HITL)](#human-in-the-loop-hitl)
@@ -93,14 +95,14 @@ No email is ever sent without your review and approval.
 
 | Layer    | Technology                        | Purpose                         |
 |----------|-----------------------------------|---------------------------------|
-| Frontend | Streamlit 1.35                    | Interactive review UI           |
-| Backend  | FastAPI 0.115 + Uvicorn           | REST API server                 |
+| Frontend | Streamlit 1.57                    | Interactive review UI           |
+| Backend  | FastAPI 0.136 + Uvicorn           | REST API server                 |
 | Agent    | deepagents + LangGraph            | Deep agent orchestration + HITL |
-| LLM      | ChatOllama (langchain-ollama)     | Local Ollama model              |
+| LLM      | ChatOllama (langchain-ollama)     | Configurable Ollama endpoint    |
 | Tools    | Plain Python functions            | Gmail + DB operations           |
 | Gmail    | google-api-python-client + OAuth2 | Email read/send                 |
 | Database | SQLite + SQLAlchemy 2.0           | Drafts + activity logs          |
-| Config   | pydantic-settings v2              | .env management                 |
+| Config   | python-dotenv + os.getenv         | .env management                 |
 
 ---
 
@@ -109,7 +111,10 @@ No email is ever sent without your review and approval.
 ```
 draftly/
 │
-├── main.py                        ← Entry point: starts FastAPI with Streamlit
+├── main.py                        ← Streamlit frontend entry point
+├── Dockerfile                     ← Shared image for backend and UI
+├── docker-compose.yml             ← Ollama + backend + Streamlit services
+├── .env.example                   ← Copy to .env and fill in values
 ├── requirements.txt               ← All Python dependencies
 ├── .env                           ← Your credentials (DO NOT COMMIT)
 ├── token.json                     ← Auto-generated after OAuth (DO NOT COMMIT)
@@ -121,8 +126,7 @@ draftly/
     │
     ├── config/
     │   ├── __init__.py
-    │   └── settings.py            ← Pydantic-settings: reads all values from .env
-    │                                 Exposes: get_settings() singleton
+    │   └── settings.py            ← Environment config helper
     │
     ├── db/
     │   ├── __init__.py
@@ -135,7 +139,7 @@ draftly/
     │   └── gmail_service.py       ← GmailService class (OOP)
     │                                 OAuth2 flow, fetch inbox/sent, send email
     │                                 No credentials.json — reads from .env
-    │                                 Singleton: gmail = GmailService()
+    │                                 Used directly by the API and agent tools
     │
     ├── tools/
     │   ├── __init__.py            ← Exports ALL_TOOLS list
@@ -155,40 +159,45 @@ draftly/
     │                                 create_deep_agent() with interrupt_on
     │                                 MemorySaver checkpointer
     │                                 run_draft_generation() / run_send() / resume()
-    │                                 Singleton: agent = DraftlyAgent()
+    │                                 Instantiated on demand by the API
     │
     └── api/
         ├── __init__.py
-        └── app.py                 ← FastAPI app (all routes on app directly)
+        └── routes.py              ← FastAPI app (all routes on app directly)
                                      /auth, /emails, /drafts, /logs
 ```
 
 ### Key File Responsibilities
 
-| File                            | Class / Object                | Responsibility                           |
-|---------------------------------|-------------------------------|------------------------------------------|
-| `src/config/settings.py`        | `Settings`, `get_settings()`  | Single source of truth for all env vars  |
-| `src/db/models.py`              | `Draft`, `Log`, `DraftStatus` | ORM table definitions                    |
-| `src/db/session.py`             | —                             | `init_db()`, `get_db()`, `write_log()`   |
-| `src/services/gmail_service.py` | `GmailService`, `gmail`       | All Gmail API interactions               |
-| `src/tools/gmail_tools.py`      | —                             | Agent-callable Gmail tools               |
-| `src/tools/db_tools.py`         | —                             | Agent-callable database tools            |
-| `src/agent/draftly_agent.py`    | `DraftlyAgent`, `agent`       | Deep agent with HITL via `interrupt_on`  |
-| `src/api/app.py`                | `app`                         | FastAPI application + all route handlers |
-| `main.py`                       | —                             | Uvicorn server entry point               |
-| `streamlit_app.py`              | —                             | Complete Streamlit review UI             |
+| File                              | Class / Object                | Responsibility                           |
+|-----------------------------------|-------------------------------|------------------------------------------|
+| `src/config/settings.py`          | `Settings`                    | Reads env vars, defaults, and scopes     |
+| `src/db/models.py`                | `Draft`, `Log`, `DraftStatus` | ORM table definitions                    |
+| `src/db/session.py`               | —                             | `init_db()`, `get_db()`, `write_log()`   |
+| `src/services/gmail_service.py`   | `GmailService`, `gmail`       | All Gmail API interactions               |
+| `src/tools/gmail_tools.py`        | —                             | Agent-callable Gmail tools               |
+| `src/tools/db_tools.py`           | —                             | Agent-callable database tools            |
+| `src/agent/draftly_agent.py`      | `DraftlyAgent`, `agent`       | Deep agent with HITL via `interrupt_on`  |
+| `src/api/routes.py`               | `app`                         | FastAPI application + all route handlers |
+| `main.py`                         | —                             | Streamlit UI entry point                 |
+| `Dockerfile`                      | —                             | Builds the shared Python image           |
+| `docker-compose.yml`              | —                             | Runs Ollama, backend, and Streamlit      |
+| `.env.example`                    | —                             | Template for local and Docker variables  |
 
 ---
 
 ## Prerequisites
 
-| Tool   | Version   | Install                                         |
-|--------|-----------|-------------------------------------------------|
-| Python | 3.13+     | [python.org](https://www.python.org/downloads/) |
-| Ollama | Latest    | `brew install ollama`                           |
-| Git    | Any       | -                                               |
+| Tool     | Version     | Install                                                                              |
+|----------|-------------|--------------------------------------------------------------------------------------|
+| Python   | 3.13+       | [python.org](https://www.python.org/downloads/)                                      |
+| Ollama   | Latest      | `brew install ollama` or Docker Compose                                              |
+| Git      | Any         | -                                                                                    |
+| Docker   | Latest      | [Docker Desktop](https://www.docker.com/products/docker-desktop/)                    |
 
 > **macOS users:** Ensure Xcode CLI tools are installed: `xcode-select --install`
+>
+> **Docker users:** Install and open Docker Desktop before running the Compose workflow.
 
 ---
 
@@ -287,7 +296,13 @@ pip install -r requirements.txt
 
 ## Step 4 — Configure .env
 
-Open `.env` in your editor and fill in every value:
+Copy the example file and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` in your editor and fill in the required values:
 
 ```env
 # Google OAuth2 
@@ -300,13 +315,39 @@ GOOGLE_TOKEN_FILE=token.json
 # Ollama 
 # Must match a model you have pulled (see Step 5)
 OLLAMA_CLOUD_MODEL=qwen2.5:7b
+OLLAMA_BASE_URL=http://localhost:11434
 
 # Database
 DATABASE_URL=sqlite:///./draftly.db
+
+# Streamlit frontend -> backend URL
+DRAFTLY_API_BASE_URL=http://localhost:8000
 ```
 
 > **Important:** Never commit `.env` or `token.json` to Git.
 > Both are in `.gitignore` by default.
+
+## Environment Variables
+
+| Variable               | Required         | Default                               | Purpose                         |
+|------------------------|------------------|---------------------------------------|---------------------------------|
+| `GOOGLE_CLIENT_ID`     | Yes              | —                                     | Google OAuth client ID          |
+| `GOOGLE_CLIENT_SECRET` | Yes              | —                                     | Google OAuth client secret      |
+| `GOOGLE_REDIRECT_URI`  | Yes              | `http://localhost:8000/auth/callback` | OAuth callback URL              |
+| `GOOGLE_TOKEN_FILE`    | No               | `token.json`                          | OAuth token storage path        |
+| `OLLAMA_CLOUD_MODEL`   | Yes for drafting | —                                     | Model tag used by `ChatOllama`  |
+| `OLLAMA_BASE_URL`      | No               | `http://localhost:11434`              | Ollama server URL               |
+| `DATABASE_URL`         | No               | `sqlite:///./draftly.db`              | SQLAlchemy database URL         |
+| `DRAFTLY_API_BASE_URL` | No               | `http://localhost:8000`               | Streamlit API base URL          |
+
+### Docker overrides
+
+When you run with Docker Compose, the container environment is overridden automatically:
+
+- `DATABASE_URL=sqlite:////app/data/draftly.db`
+- `GOOGLE_TOKEN_FILE=/app/data/token.json`
+- `OLLAMA_BASE_URL=http://ollama:11434`
+- `DRAFTLY_API_BASE_URL=http://backend:8000`
 
 ---
 
@@ -333,7 +374,7 @@ ollama pull qwen2.5:14b     # Better quality, needs more RAM
 
 > **Choosing a model:** The agent requires a model with strong **function/tool calling** support.
 > `qwen2.5:7b` is the recommended default for 16GB RAM machines.
-> For 8GB RAM, try `qwen2.5:3b` and update `OLLAMA_MODEL` in `.env`.
+> For 8GB RAM, try `qwen2.5:3b` and update `OLLAMA_CLOUD_MODEL` in `.env`.
 
 Verify the model is available:
 
@@ -346,6 +387,8 @@ ollama list
 
 ## Step 6 — Run the Application
 
+### Local development
+
 You need **3 terminal tabs**, all with `.venv` activated.
 
 **Terminal 1 - Ollama (keep running)**
@@ -357,7 +400,7 @@ ollama serve
 ```bash
 cd ~/Projects/draftly
 source .venv/bin/activate
-uvicorn main:app --reload
+uvicorn src.api.routes:app --reload
 ```
 
 Expected output:
@@ -388,6 +431,8 @@ Expected output:
 | Swagger API Docs | http://localhost:8000/docs   |
 | ReDoc API Docs   | http://localhost:8000/redoc  |
 
+> If you prefer Docker, skip to the **Docker** section below.
+
 ---
 
 ## Step 7 — First-Run: Gmail OAuth
@@ -407,6 +452,53 @@ Expected output:
 
 ---
 
+## Docker
+
+You can run the project with Docker Compose instead of local Python processes.
+
+### What runs in Compose
+
+- `ollama` — model server and model storage volume
+- `backend` — FastAPI app on port `8000`
+- `frontend` — Streamlit UI on port `8501`
+
+### First-time setup
+
+```bash
+cp .env.example .env
+```
+
+Fill in your Google OAuth values in `.env`, then start the stack:
+
+```bash
+docker compose up --build
+```
+
+In a second terminal, pull your Ollama model into the container volume if it is not already available:
+
+```bash
+docker compose exec ollama ollama pull qwen2.5:7b
+```
+
+Check service status if needed:
+
+```bash
+docker compose ps
+docker compose logs ollama --tail 200
+docker compose logs backend --tail 200
+```
+
+Then open:
+
+- Streamlit UI: http://localhost:8501
+- FastAPI docs: http://localhost:8000/docs
+- FastAPI health: http://localhost:8000/health
+
+> Keep `GOOGLE_REDIRECT_URI=http://localhost:8000/auth/callback` in your `.env` so the OAuth callback reaches the 
+> backend container.
+
+---
+
 ## Usage Flow
 
 ### 1. Generate Draft Replies
@@ -416,6 +508,8 @@ Click **Generate Draft Replies** in the Streamlit sidebar.
 The deep agent runs the following workflow automatically:
 - Calls `fetch_sent_emails` → learns your writing style from recent sent messages
 - Calls `fetch_unread_emails` → retrieves your unread inbox
+- Calls `summarize_unread_emails` → builds short summaries and suggested reply intents
+- Lets you set per-email intent preferences (`accept`, `reject`, `neutral`) in the Inbox tab
 - For each unread email, generates a context-aware reply matching your tone
 - Calls `save_draft` for each reply → stored in SQLite as `pending`
 - Calls `list_pending_drafts` → confirms all were saved
@@ -479,15 +573,16 @@ Full interactive documentation at **http://localhost:8000/docs**
 
 ### Emails
 
-| Method   | Path            | Query Params                     | Description                             |
-|----------|-----------------|----------------------------------|-----------------------------------------|
-| `GET`    | `/emails/inbox` | `max_results` (1-50, default 10) | Fetch unread emails from Gmail directly |
+| Method     | Path                | Query Params                        | Description                                   |
+|------------|---------------------|-------------------------------------|-----------------------------------------------|
+| `GET`      | `/emails/inbox`     | `max_results` (1-50, default 10)    | Fetch unread emails from Gmail directly       |
+| `GET`      | `/emails/summaries` | `max_results` (1-50, default 10)    | Fetch short summaries and suggested intents   |
 
 ### Drafts
 
 | Method   | Path                   | Body                                            |  Description                                     |
 |----------|------------------------|-------------------------------------------------|--------------------------------------------------|
-| `POST`   | `/drafts/generate`     | -                                               | Run the AI agent: fetch + generate + save drafts |
+| `POST`   | `/drafts/generate`     | `{"max_results": 10, "intent_preferences": {}}` | Run the AI agent: fetch + generate + save drafts |
 | `GET`    | `/drafts`              | `?status=pending\|approved\|…`                  | List drafts, optionally filtered                 |
 | `GET`    | `/drafts/{id}`         | -                                               | Get a single draft by UUID                       |
 | `PATCH`  | `/drafts/{id}/approve` | -                                               | Mark draft as approved                           |
@@ -506,7 +601,9 @@ Full interactive documentation at **http://localhost:8000/docs**
 
 ```bash
 # 1. Generate drafts
-curl -X POST http://localhost:8000/drafts/generate
+curl -X POST http://localhost:8000/drafts/generate \
+  -H "Content-Type: application/json" \
+  -d '{"max_results": 10, "intent_preferences": {}}'
 
 # 2. List pending drafts
 curl http://localhost:8000/drafts?status=pending
@@ -668,8 +765,8 @@ approved       edited  ←── user edits body
 ## Design Decisions
 
 **No `credentials.json`**
-All OAuth2 credentials are read from `.env` via pydantic-settings. `GmailService` builds the client config dict at 
-runtime. This avoids committing sensitive files and fits cleanly into any deployment environment.
+All OAuth2 credentials are read from `.env` via `python-dotenv` and `os.getenv`. `GmailService` builds the client config 
+dict at runtime. This avoids committing sensitive files and fits cleanly into any deployment environment.
 
 **`ChatOllama` instead of `init_chat_model`**
 `ChatOllama` from `langchain-ollama` is the direct, explicit integration class. It takes `model` and `base_url` as typed
@@ -685,12 +782,16 @@ compiled graph). Tools are plain functions because deepagents reads their type h
 tool schemas - no decorator needed.
 
 **All routes on `app` directly - no `APIRouter`**
-Keeps the entire API surface in one file (`src/api/app.py`) for straightforward navigation. For a larger project, 
+Keeps the entire API surface in one file (`src/api/routes.py`) for straightforward navigation. For a larger project, 
 splitting into routers would be appropriate.
 
 **`MemorySaver` checkpointer**
 Persists the LangGraph agent state in memory for the lifetime of the FastAPI process. State survives a HITL interrupt 
 and can be resumed by thread ID. For production, swap to `langgraph.checkpoint.postgres.PostgresSaver`.
+
+**Docker Compose for local dev**
+Compose keeps the backend, UI, and Ollama model server in separate containers while sharing the SQLite/token volume for 
+a smoother setup on macOS and Linux.
 
 ---
 
@@ -700,7 +801,7 @@ and can be resumed by thread ID. For production, swap to `langgraph.checkpoint.p
 Always run from the project root (`draftly/`), never from inside `src/`:
 ```bash
 cd ~/Projects/draftly
-uvicorn main:app --reload  # 
+uvicorn src.api.routes:app --reload
 # NOT: cd src && python main.py  ✗
 ```
 
@@ -725,14 +826,36 @@ No trailing slash. Check under **APIs & Services → Credentials → your OAuth 
 The Ollama model may not support tool calling. Use `qwen2.5:7b` or `llama3.1`:
 ```bash
 ollama pull qwen2.5:7b
-# Update OLLAMA_MODEL=qwen2.5:7b in .env
+# Update OLLAMA_CLOUD_MODEL=qwen2.5:7b in .env
 ```
+
+**`model not found (404)`**
+The model tag is not available on your Ollama instance. Run:
+```bash
+ollama list
+ollama pull <model-name>
+```
+Then update `OLLAMA_CLOUD_MODEL` in `.env` to match the installed tag.
+
+**`model requires more system memory`**
+The selected model is too large for the available RAM. Use a smaller model such as `qwen2.5:3b` or increase the 
+available memory in Docker Desktop / your machine.
 
 **`token.json` expired / invalid**
 Delete it and re-authenticate:
 ```bash
 rm token.json
 # Then click Connect Gmail in Streamlit again
+```
+
+**`service "ollama" is not running`**
+Start the Compose stack first:
+```bash
+docker compose up -d ollama
+```
+If the container keeps exiting, inspect its logs:
+```bash
+docker compose logs ollama --tail 200
 ```
 
 **Gmail 403 `insufficientPermissions`**
@@ -742,7 +865,7 @@ Delete `token.json` and re-connect to trigger a fresh consent screen with all sc
 **Streamlit shows `Connection refused` errors**
 The FastAPI backend isn't running. Start it:
 ```bash
-uvicorn main:app --reload
+uvicorn src.api.routes:app --reload
 ```
 
 ---
